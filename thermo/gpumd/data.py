@@ -1,10 +1,12 @@
 import numpy as np
+import pandas as pd
 import os
 import re
 import copy
 import multiprocessing as mp
 from functools import partial
 from collections import deque
+from ase.build import bulk
 
 __author__ = "Alexander Gabourie"
 __email__ = "gabourie@stanford.edu"
@@ -178,6 +180,154 @@ def __modal_analysis_read(nbins, nsamples, datapath,
 #########################################
 # Data-loading Related
 #########################################
+
+def create_basis(name, transform):
+    """
+    Creates the file "basis.in", which maps atoms in the super cell to the atoms in the unit cell
+
+    Args:
+        name (str):
+            atom to build
+
+        transform (int | 3 floats):
+            creates the super cell by making the unit cell larger by these 3 amounts.
+            ex: (2, 2, 2)
+
+        Returns:
+
+    """
+
+    #     unit cell information
+    unit_c = bulk(name)
+    num_unit = len(unit_c)
+    unit_mass = unit_c.get_masses()
+    amount = len(unit_mass)
+
+    #     supercell information
+    supercell = unit_c.repeat(transform)
+    num_super = len(supercell)
+
+    #     creating basis
+    basis = list()
+    for i in range(num_super):
+        for j in range(num_unit):
+            basis.append(j)
+
+    #     creating file
+    with open("basis.in", "w") as f:
+        f.write(str(num_unit) + '\n')
+        for i in range(amount):
+            f.write(str(i) + ' ' + str(round(unit_mass[i])) + '\n')
+        for value in basis:
+            f.write(str(value) + '\n')
+    return
+
+def load_compute(directory=None, filename='compute.out', quantities=None):
+    """
+    loads data from compute.out GPUMD output file 
+
+    Args:
+        directory (str):
+            Directory to load 'compute.out' file from (dir. of simulation)
+
+        filename (str):
+            file to load compute from
+
+        quantities (str):
+            allows user to set which quantities to extract from compute.out (such as temperature, force, jp, jk, etc.)
+
+        Returns:
+            'output' dictionary containing the data from compute.out
+    """
+
+    if not directory:
+        com_n = os.path.join(os.getcwd(), filename)
+    else:
+        com_n = os.path.join(directory, filename)
+
+    com_n = pd.read_csv(com_n, sep="\s+", header=None)
+
+    total_cols = len(com_n.columns)
+    q_count = {'temperature': 1, 'potential': 1, 'force': 3, 'virial': 3, 'jp': 3, 'jk': 3}
+    output = dict()
+
+    count = 0
+    for value in quantities:
+        count += q_count[value]
+
+    m = int(total_cols / count)
+    if 'temperature' in quantities:
+        m = int((total_cols - 2) / count)
+
+    start = 0
+    if 'temperature' in quantities:
+        output['temperature'] = np.array(com_n.iloc[:, :m])
+        output['heat_in'] = np.array(com_n.iloc[:, total_cols - 1:total_cols])
+        output['heat_out'] = np.array(com_n.iloc[:, total_cols:])
+        start = m
+
+    if 'potential' in quantities:
+        output['potential'] = np.array(com_n.iloc[:, start: m])
+        start += m
+
+    if 'force' in quantities:
+        output['force'] = np.array(com_n.iloc[:, start: start + (3 * m)])
+        start += 3 * m
+
+    if 'virial' in quantities:
+        output['virial'] = np.array(com_n.iloc[:, start: start + (3 * m)])
+        start += 3 * m
+
+    if 'jp' in quantities:
+        output['jp'] = np.array(com_n.iloc[:, start: start + (3 * m)])
+        start += 3 * m
+
+    if 'jk' in quantities:
+        output['jk'] = np.array(com_n.iloc[:, start: start + (3 * m)])
+
+    return output
+
+
+def load_thermo(directory=None, filename='thermo.out',triclinic=False):
+    """
+    loads data from thermo.out GPUMD output file.
+
+    Args:
+        directory (str):
+            Directory to load 'thermo.out' file from (dir. of simulation)
+
+        filename (str):
+            file to load thermo from
+
+        triclinic (bool):
+            allows user to set as true if triclinic, effects the total number of columns of data to add to.
+            if triclinic is false, then orthogonal by default.
+
+        Returns:
+            'output' dictionary containing the data from thermo.out (ex: temperature, kinetic energy, etc.)
+    """
+    if not directory:
+        t_path = os.path.join(os.getcwd(), filename)
+    else:
+        t_path = os.path.join(directory, filename)
+
+    output = {'T': [], 'K': [], 'U': [], 'Px': [], 'Py': [], 'Pz': []}
+
+    # orthogonal
+    if not triclinic:
+        output.update({'Lx': [], 'Ly': [], 'Lz': []})
+
+    # triclinic
+    else:
+        output.update({'ax': [], 'ay': [], 'az': [], 'bx': [], 'by': [], 'bz': [], 'cx': [], 'cy': [], 'cz': []})
+
+    with open(t_path) as f:
+        for line in f:
+            data = [float(num) for num in line.split()]
+            for key in output.keys():
+                index = list(output.keys()).index(key)
+                output[key].append(data[index])
+    return output
 
 
 def load_heatmode(nbins, nsamples, directory=None,
